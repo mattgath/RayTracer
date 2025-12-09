@@ -4,6 +4,7 @@ import java.util.*;
 
 public class RayTracer {
 
+    static Random rand = new Random();
     static class Vec3 {
         double x, y, z;
 
@@ -16,6 +17,13 @@ public class RayTracer {
         double dot(Vec3 v) { return x * v.x + y * v.y + z * v.z; }
         double length() { return Math.sqrt(x*x + y*y + z*z); }
         Vec3 normalize() { double l = length(); return new Vec3(x/l, y/l, z/l); }
+
+        static Vec3 randomUnitVector() {
+            while (true) {
+                Vec3 p = new Vec3(rand.nextDouble()*2-1, rand.nextDouble()*2-1, rand.nextDouble()*2-1);
+                if (p.dot(p) < 1) return p.normalize();
+            }
+        }
     }
 
     static class Ray {
@@ -47,7 +55,8 @@ public class RayTracer {
     }
 
     static List<Sphere> spheres = new ArrayList<>();
-    static Vec3 lightDir = new Vec3(1, 1, 1).normalize();
+    static int samplesPerPixel = 50;  // Anti-aliasing samples
+    static int maxDepth = 10;          // Max ray bounces
 
     public static void main(String[] args) throws IOException {
         int width = 800;
@@ -66,12 +75,20 @@ public class RayTracer {
         int[][] pixels = new int[height][width * 3];
 
         for (int j = 0; j < height; j++) {
-            for (int i = 0; i < width; i++) {
-                double x = (2 * (i + 0.5) / width - 1) * aspect * scale;
-                double y = (1 - 2 * (j + 0.5) / height) * scale;
-                Ray ray = new Ray(camPos, new Vec3(x, y, -1));
+            if (j % 100 == 0) System.out.println("Row " + j + "/" + height);
 
-                Vec3 color = trace(ray);
+            for (int i = 0; i < width; i++) {
+                Vec3 color = new Vec3(0, 0, 0);
+
+                for (int s = 0; s < samplesPerPixel; s++) {
+                    double x = (2 * (i + rand.nextDouble()) / width - 1) * aspect * scale;
+                    double y = (1 - 2 * (j + rand.nextDouble()) / height) * scale;
+                    Ray ray = new Ray(camPos, new Vec3(x, y, -1));
+
+                    color = color.add(trace(ray, maxDepth));
+                }
+
+                color = color.mul(1.0 / samplesPerPixel);
 
                 pixels[j][i*3]     = (int)(255 * Math.min(1, Math.sqrt(color.x)));
                 pixels[j][i*3 + 1] = (int)(255 * Math.min(1, Math.sqrt(color.y)));
@@ -83,7 +100,9 @@ public class RayTracer {
         System.out.println("Complete sire! Your amazing super awesome cool ppm has been completed.");
     }
 
-    static Vec3 trace(Ray ray) {
+    static Vec3 trace(Ray ray, int depth) {
+        if (depth <= 0) return new Vec3(0, 0, 0);
+
         double closest = Double.MAX_VALUE;
         Sphere hitSphere = null;
 
@@ -98,9 +117,9 @@ public class RayTracer {
         if (hitSphere != null) {
             Vec3 hitPoint = ray.at(closest);
             Vec3 normal = hitSphere.normalAt(hitPoint);
-            double diffuse = Math.max(0, normal.dot(lightDir));
-            double ambient = 0.1;
-            return hitSphere.color.mul(diffuse + ambient);
+            Vec3 bounceDir = normal.add(Vec3.randomUnitVector()).normalize();
+            Ray bounceRay = new Ray(hitPoint, bounceDir);
+            return hitSphere.color.mul(trace(bounceRay, depth - 1));
         }
 
         double t = 0.5 * (ray.dir.y + 1);
