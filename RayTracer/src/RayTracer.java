@@ -1,7 +1,6 @@
 import java.io.*;
 import java.util.*;
 
-
 public class RayTracer {
 
     static Random rand = new Random();
@@ -29,6 +28,13 @@ public class RayTracer {
         static Vec3 reflect(Vec3 v, Vec3 n) {
             return v.sub(n.mul(2 * v.dot(n)));
         }
+
+        static Vec3 refract(Vec3 uv, Vec3 n, double etaiOverEtat) {
+            double cosTheta = Math.min(-uv.dot(n), 1.0);
+            Vec3 rOutPerp = uv.add(n.mul(cosTheta)).mul(etaiOverEtat);
+            Vec3 rOutPar = n.mul(-Math.sqrt(Math.abs(1.0 - rOutPerp.dot(rOutPerp))));
+            return rOutPerp.add(rOutPar);
+        }
     }
 
     static class Ray {
@@ -39,20 +45,23 @@ public class RayTracer {
 
     static final int DIFFUSE = 0;
     static final int METAL = 1;
+    static final int DIELECTRIC = 2;
+    static final int EMISSIVE = 3;
 
     static class Sphere {
-        Vec3 center, color;
-        double radius;
+        Vec3 center, color, emission;
+        double radius, fuzz;
         int material;
-        double fuzz;  // For metal: 0 = perfect mirror, 1 = very fuzzy
 
         Sphere(Vec3 c, double r, Vec3 col, int mat) {
-            center = c; radius = r; color = col; material = mat; fuzz = 0;
+            center = c; radius = r; color = col; material = mat; fuzz = 0; emission = new Vec3(0,0,0);
         }
 
         Sphere(Vec3 c, double r, Vec3 col, int mat, double fuzz) {
-            center = c; radius = r; color = col; material = mat; this.fuzz = fuzz;
+            center = c; radius = r; color = col; material = mat; this.fuzz = fuzz; emission = new Vec3(0,0,0);
         }
+
+        Sphere setEmission(Vec3 e) { emission = e; return this; }
 
         double hit(Ray ray) {
             Vec3 oc = ray.origin.sub(center);
@@ -71,7 +80,7 @@ public class RayTracer {
     }
 
     static List<Sphere> spheres = new ArrayList<>();
-    static int samplesPerPixel = 50;
+    static int samplesPerPixel = 200;
     static int maxDepth = 10;
 
     public static void main(String[] args) throws IOException {
@@ -83,10 +92,12 @@ public class RayTracer {
         double scale = Math.tan(Math.toRadians(fov / 2));
         double aspect = (double) width / height;
 
-        spheres.add(new Sphere(new Vec3(0, 2, -5), 1, new Vec3(0.8, 0.2, 0.2), METAL, 0.0));       // Red diffuse
-        spheres.add(new Sphere(new Vec3(-2, 0, -4), 1, new Vec3(0.8, 0.8, 0.8), METAL, 0.0));   // Silver mirror
-        spheres.add(new Sphere(new Vec3(2, 0, -6), 1, new Vec3(0.8, 0.6, 0.2), METAL, 0.8));    // Gold fuzzy
-        spheres.add(new Sphere(new Vec3(0, -101, -5), 100, new Vec3(0.5, 0.5, 0.5), DIFFUSE));  // Ground
+        spheres.add(new Sphere(new Vec3(0, 0, -5), 1, new Vec3(0.8, 0.2, 0.2), DIFFUSE));
+        spheres.add(new Sphere(new Vec3(-2, 0, -4), 1, new Vec3(0.8, 0.8, 0.8), METAL, 0.0));
+        spheres.add(new Sphere(new Vec3(2, 0, -6), 1, new Vec3(1.0, 1.0, 1.0), DIELECTRIC, 1.5));
+        spheres.add(new Sphere(new Vec3(2, 0, -6), -0.9, new Vec3(1.0, 1.0, 1.0), DIELECTRIC, 1.5));
+        spheres.add(new Sphere(new Vec3(0, -101, -5), 100, new Vec3(0.5, 0.5, 0.5), DIFFUSE));
+        spheres.add(new Sphere(new Vec3(-1, 3, -3), 2, new Vec3(1,1,1), EMISSIVE).setEmission(new Vec3(2,2,2)));
 
         int[][] pixels = new int[height][width * 3];
 
@@ -100,12 +111,10 @@ public class RayTracer {
                     double x = (2 * (i + rand.nextDouble()) / width - 1) * aspect * scale;
                     double y = (1 - 2 * (j + rand.nextDouble()) / height) * scale;
                     Ray ray = new Ray(camPos, new Vec3(x, y, -1));
-
                     color = color.add(trace(ray, maxDepth));
                 }
 
                 color = color.mul(1.0 / samplesPerPixel);
-
                 pixels[j][i*3]     = (int)(255 * Math.min(1, Math.sqrt(color.x)));
                 pixels[j][i*3 + 1] = (int)(255 * Math.min(1, Math.sqrt(color.y)));
                 pixels[j][i*3 + 2] = (int)(255 * Math.min(1, Math.sqrt(color.z)));
@@ -134,18 +143,39 @@ public class RayTracer {
             Vec3 hitPoint = ray.at(closest);
             Vec3 normal = hitSphere.normalAt(hitPoint);
 
-            if (hitSphere.material == METAL) {
+            if (hitSphere.material == EMISSIVE) {
+                return hitSphere.emission;
+            } else if (hitSphere.material == METAL) {
                 Vec3 reflected = Vec3.reflect(ray.dir, normal);
                 Vec3 fuzzed = reflected.add(Vec3.randomUnitVector().mul(hitSphere.fuzz));
                 if (fuzzed.dot(normal) > 0) {
-                    Ray bounceRay = new Ray(hitPoint, fuzzed.normalize());
-                    return hitSphere.color.mul(trace(bounceRay, depth - 1));
+                    return hitSphere.color.mul(trace(new Ray(hitPoint, fuzzed.normalize()), depth - 1));
                 }
-                return new Vec3(0, 0, 0);  // Absorbed
+                return new Vec3(0, 0, 0);
+            } else if (hitSphere.material == DIELECTRIC) {
+                double ior = hitSphere.fuzz;
+                boolean frontFace = ray.dir.dot(normal) < 0;
+                Vec3 n = frontFace ? normal : normal.mul(-1);
+                double ratio = frontFace ? (1.0 / ior) : ior;
+
+                double cosTheta = Math.min(-ray.dir.dot(n), 1.0);
+                double sinTheta = Math.sqrt(1.0 - cosTheta * cosTheta);
+                boolean cannotRefract = ratio * sinTheta > 1.0;
+
+                double r0 = (1 - ratio) / (1 + ratio);
+                r0 = r0 * r0;
+                double schlick = r0 + (1 - r0) * Math.pow(1 - cosTheta, 5);
+
+                Vec3 dir;
+                if (cannotRefract || schlick > rand.nextDouble()) {
+                    dir = Vec3.reflect(ray.dir, n);
+                } else {
+                    dir = Vec3.refract(ray.dir, n, ratio);
+                }
+                return trace(new Ray(hitPoint, dir), depth - 1);
             } else {
                 Vec3 bounceDir = normal.add(Vec3.randomUnitVector()).normalize();
-                Ray bounceRay = new Ray(hitPoint, bounceDir);
-                return hitSphere.color.mul(trace(bounceRay, depth - 1));
+                return hitSphere.color.mul(trace(new Ray(hitPoint, bounceDir), depth - 1));
             }
         }
 
