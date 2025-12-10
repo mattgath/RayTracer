@@ -5,6 +5,7 @@ import java.util.*;
 public class RayTracer {
 
     static Random rand = new Random();
+
     static class Vec3 {
         double x, y, z;
 
@@ -24,6 +25,10 @@ public class RayTracer {
                 if (p.dot(p) < 1) return p.normalize();
             }
         }
+
+        static Vec3 reflect(Vec3 v, Vec3 n) {
+            return v.sub(n.mul(2 * v.dot(n)));
+        }
     }
 
     static class Ray {
@@ -32,11 +37,22 @@ public class RayTracer {
         Vec3 at(double t) { return origin.add(dir.mul(t)); }
     }
 
+    static final int DIFFUSE = 0;
+    static final int METAL = 1;
+
     static class Sphere {
         Vec3 center, color;
         double radius;
+        int material;
+        double fuzz;  // For metal: 0 = perfect mirror, 1 = very fuzzy
 
-        Sphere(Vec3 c, double r, Vec3 col) { center = c; radius = r; color = col; }
+        Sphere(Vec3 c, double r, Vec3 col, int mat) {
+            center = c; radius = r; color = col; material = mat; fuzz = 0;
+        }
+
+        Sphere(Vec3 c, double r, Vec3 col, int mat, double fuzz) {
+            center = c; radius = r; color = col; material = mat; this.fuzz = fuzz;
+        }
 
         double hit(Ray ray) {
             Vec3 oc = ray.origin.sub(center);
@@ -55,8 +71,8 @@ public class RayTracer {
     }
 
     static List<Sphere> spheres = new ArrayList<>();
-    static int samplesPerPixel = 50;  // Anti-aliasing samples
-    static int maxDepth = 10;          // Max ray bounces
+    static int samplesPerPixel = 50;
+    static int maxDepth = 10;
 
     public static void main(String[] args) throws IOException {
         int width = 800;
@@ -67,10 +83,10 @@ public class RayTracer {
         double scale = Math.tan(Math.toRadians(fov / 2));
         double aspect = (double) width / height;
 
-        spheres.add(new Sphere(new Vec3(0, 0, -5), 1, new Vec3(0.8, 0.2, 0.2)));
-        spheres.add(new Sphere(new Vec3(-2, 0, -4), 1, new Vec3(0.2, 0.8, 0.2)));
-        spheres.add(new Sphere(new Vec3(2, 0, -6), 1, new Vec3(0.2, 0.2, 0.8)));
-        spheres.add(new Sphere(new Vec3(0, -101, -5), 100, new Vec3(0.5, 0.5, 0.5)));
+        spheres.add(new Sphere(new Vec3(0, 2, -5), 1, new Vec3(0.8, 0.2, 0.2), METAL, 0.0));       // Red diffuse
+        spheres.add(new Sphere(new Vec3(-2, 0, -4), 1, new Vec3(0.8, 0.8, 0.8), METAL, 0.0));   // Silver mirror
+        spheres.add(new Sphere(new Vec3(2, 0, -6), 1, new Vec3(0.8, 0.6, 0.2), METAL, 0.8));    // Gold fuzzy
+        spheres.add(new Sphere(new Vec3(0, -101, -5), 100, new Vec3(0.5, 0.5, 0.5), DIFFUSE));  // Ground
 
         int[][] pixels = new int[height][width * 3];
 
@@ -117,9 +133,20 @@ public class RayTracer {
         if (hitSphere != null) {
             Vec3 hitPoint = ray.at(closest);
             Vec3 normal = hitSphere.normalAt(hitPoint);
-            Vec3 bounceDir = normal.add(Vec3.randomUnitVector()).normalize();
-            Ray bounceRay = new Ray(hitPoint, bounceDir);
-            return hitSphere.color.mul(trace(bounceRay, depth - 1));
+
+            if (hitSphere.material == METAL) {
+                Vec3 reflected = Vec3.reflect(ray.dir, normal);
+                Vec3 fuzzed = reflected.add(Vec3.randomUnitVector().mul(hitSphere.fuzz));
+                if (fuzzed.dot(normal) > 0) {
+                    Ray bounceRay = new Ray(hitPoint, fuzzed.normalize());
+                    return hitSphere.color.mul(trace(bounceRay, depth - 1));
+                }
+                return new Vec3(0, 0, 0);  // Absorbed
+            } else {
+                Vec3 bounceDir = normal.add(Vec3.randomUnitVector()).normalize();
+                Ray bounceRay = new Ray(hitPoint, bounceDir);
+                return hitSphere.color.mul(trace(bounceRay, depth - 1));
+            }
         }
 
         double t = 0.5 * (ray.dir.y + 1);
